@@ -2,7 +2,8 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Mic, Square, Loader2, Send, Bot, Sparkles } from 'lucide-react';
-import { ChatMessage, MessageProps } from './ChatMessage';
+import { ChatMessage, MessageProps, ChatMessageRef } from './ChatMessage';
+import { Headphones, HeadphoneOff } from 'lucide-react';
 import clsx from 'clsx';
 
 export function Chat() {
@@ -12,6 +13,9 @@ export function Chat() {
     const [input, setInput] = useState('');
     const [isRecording, setIsRecording] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
+    const [audioError, setAudioError] = useState<string | null>(null);
+    const [isAutoMode, setIsAutoMode] = useState(false);
+    const lastMessageRef = useRef<ChatMessageRef>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const recognitionRef = useRef<any>(null); // For Web Speech API
 
@@ -45,7 +49,21 @@ export function Chat() {
 
             recognitionRef.current.onerror = (event: any) => {
                 console.error('Speech recognition error', event.error);
+                if (event.error === 'not-allowed') {
+                    setAudioError('Microphone access denied. Please check permissions.');
+                } else if (event.error === 'audio-capture') {
+                    setAudioError('No microphone found or audio capture failed.');
+                } else if (event.error === 'no-speech') {
+                    setAudioError('No speech detected. Try again.');
+                } else {
+                    setAudioError('Speech recognition error. Please try again.');
+                }
                 setIsRecording(false);
+                setTimeout(() => setAudioError(null), 5000); // Clear error after 5s
+            };
+
+            recognitionRef.current.onstart = () => {
+                setAudioError(null);
             };
 
             recognitionRef.current.onend = () => {
@@ -104,15 +122,35 @@ export function Chat() {
 
             setMessages(prev => [...prev, tutorReply]);
 
-            if (data.reply && 'speechSynthesis' in window) {
-                const utterance = new SpeechSynthesisUtterance(data.reply);
-                utterance.lang = 'en-US';
-                utterance.rate = 1.0;
-                const voices = window.speechSynthesis.getVoices();
-                const englishVoice = voices.find(v => v.lang.includes('en-') && (v.name.includes('Google') || v.name.includes('Premium')));
-                if (englishVoice) utterance.voice = englishVoice;
-                window.speechSynthesis.speak(utterance);
+            // Ciclo de Conversação Automática
+            if (isAutoMode) {
+                // Pequeno delay para garantir que o componente ChatMessage foi renderizado
+                setTimeout(() => {
+                    if (lastMessageRef.current) {
+                        console.log("Auto-Mode: Disparando voz do tutor");
+                        lastMessageRef.current.toggleSpeech();
+                        
+                        // Reativar microfone após a fala terminar
+                        // Melhoria: Esperamos um silêncio sólido de 800ms antes de considerar que terminó
+                        let stillSpeakingCount = 0;
+                        const checkSpeaking = setInterval(() => {
+                            if (!window.speechSynthesis.speaking) {
+                                stillSpeakingCount++;
+                                // Se o navegador disser que não está falando por 2 ciclos seguidos (1s)
+                                if (stillSpeakingCount >= 2) {
+                                    clearInterval(checkSpeaking);
+                                    console.log("Auto-Mode: Confirmado fim da fala, reativando microfone");
+                                    // Verificação final antes de abrir o mic
+                                    if (isAutoMode) toggleRecording();
+                                }
+                            } else {
+                                stillSpeakingCount = 0; // Se voltou a falar, reseta o contador
+                            }
+                        }, 500);
+                    }
+                }, 100);
             }
+
 
         } catch (error) {
             console.error("Failed to get response", error);
@@ -139,12 +177,40 @@ export function Chat() {
                         <p className="text-sm text-gray-500 font-medium">Your personal AI English Coach</p>
                     </div>
                 </div>
+
+                {/* Auto-Mode Toggle */}
+                <button
+                    onClick={() => setIsAutoMode(!isAutoMode)}
+                    className={clsx(
+                        "flex items-center gap-2 px-4 py-2 rounded-2xl transition-all duration-300 font-medium text-sm",
+                        isAutoMode 
+                            ? "bg-indigo-600 text-white shadow-lg shadow-indigo-200" 
+                            : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                    )}
+                >
+                    {isAutoMode ? (
+                        <>
+                            <Headphones className="w-4 h-4" />
+                            <span>Hands-free ON</span>
+                        </>
+                    ) : (
+                        <>
+                            <HeadphoneOff className="w-4 h-4" />
+                            <span>Hands-free OFF</span>
+                        </>
+                    )}
+                </button>
             </div>
 
             {/* Chat Area */}
             <div className="flex-1 overflow-y-auto px-6 pt-32 pb-40 flex flex-col gap-2 scroll-smooth">
-                {messages.map((msg) => (
-                    <ChatMessage key={msg.id} message={msg} />
+                {messages.map((msg, index) => (
+                    <ChatMessage 
+                        key={msg.id} 
+                        message={msg} 
+                        hideFeedback={isAutoMode}
+                        ref={index === messages.length - 1 ? lastMessageRef : null} 
+                    />
                 ))}
                 {isLoading && (
                     <div className="mr-auto flex justify-start w-full mt-6 animate-in slide-in-from-bottom-2 fade-in duration-300">
@@ -180,18 +246,26 @@ export function Chat() {
                         </button>
                     </div>
 
-                    {/* Floating Mic Button */}
-                    <button
-                        onClick={toggleRecording}
-                        className={clsx(
-                            "w-16 h-16 shrink-0 rounded-full flex items-center justify-center shadow-2xl transition-all duration-300 transform",
-                            isRecording
-                                ? "bg-red-500 text-white scale-110 animate-pulse shadow-red-500/40"
-                                : "bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-indigo-500/30 hover:shadow-indigo-500/50 hover:-translate-y-1 hover:scale-105"
+                    {/* Floating Mic Button with Error Tooltip */}
+                    <div className="relative group">
+                        {audioError && (
+                            <div className="absolute bottom-full mb-3 left-1/2 -translate-x-1/2 bg-red-500 text-white text-xs px-3 py-1.5 rounded-lg shadow-lg whitespace-nowrap animate-in fade-in slide-in-from-bottom-1">
+                                {audioError}
+                                <div className="absolute top-full left-1/2 -translate-x-1/2 border-8 border-transparent border-t-red-500"></div>
+                            </div>
                         )}
-                    >
-                        {isRecording ? <Square className="w-6 h-6 fill-current" /> : <Mic className="w-7 h-7" />}
-                    </button>
+                        <button
+                            onClick={toggleRecording}
+                            className={clsx(
+                                "w-16 h-16 shrink-0 rounded-full flex items-center justify-center shadow-2xl transition-all duration-300 transform",
+                                isRecording
+                                    ? "bg-red-500 text-white scale-110 animate-pulse shadow-red-500/40"
+                                    : "bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-indigo-500/30 hover:shadow-indigo-500/50 hover:-translate-y-1 hover:scale-105"
+                            )}
+                        >
+                            {isRecording ? <Square className="w-6 h-6 fill-current" /> : <Mic className="w-7 h-7" />}
+                        </button>
+                    </div>
 
                 </div>
             </div>
